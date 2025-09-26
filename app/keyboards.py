@@ -36,3 +36,17 @@ def guide_inline() -> InlineKeyboardMarkup:
         ]
     )
     return kb
+
+
+cancel_kb = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text="❌ Отмена")]],
+    resize_keyboard=True
+)
+
+format_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="Онлайн"), KeyboardButton(text="Офлайн")],
+        [KeyboardButton(text="❌ Отмена")]
+    ],
+    resize_keyboard=True
+)

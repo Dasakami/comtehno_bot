@@ -1,64 +1,111 @@
-from aiogram import Router
+from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
-from app.keyboards import guide_inline
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
+from aiogram.types import FSInputFile
+import os
+
 from app.config import STATIC_DIR, ADMIN_CHAT_IDS
 from app.schemas import LeadCreate
 from app.crud import create_lead
 from app.db import AsyncSessionLocal
 from app.utils import validate_phone
-import os
-from aiogram.types import FSInputFile
+from app.keyboards import main_kb 
+
 router = Router()
-_pending_guide: dict[int, str] = {}  
 
-@router.message(lambda m: m.text and "Получить бесплатный гайд" in m.text)
+
+class GuideForm(StatesGroup):
+    waiting_name = State()
+    waiting_phone = State()
+    waiting_email = State()
+
+
+@router.message(F.text.contains("Получить бесплатный гайд"))
 async def ask_guide(message: Message):
-    await message.answer(
-        "Выберите гайд:",
-        reply_markup=guide_inline()  
-    )
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Backend", callback_data="guide:backend_guide.pdf")
+    kb.button(text="Frontend", callback_data="guide:frontend_guide.pdf")
+    kb.adjust(1)
+    await message.answer("Выберите гайд:", reply_markup=kb.as_markup())
 
-@router.callback_query(lambda c: c.data and c.data.startswith("guide:"))
-async def guide_cb(query: CallbackQuery):
+
+@router.callback_query(F.data.startswith("guide:"))
+async def guide_cb(query: CallbackQuery, state: FSMContext):
     filename = query.data.split(":", 1)[1]
-    chat_id = query.from_user.id
-    _pending_guide[chat_id] = filename
+    await state.update_data(filename=filename)
+    await state.set_state(GuideForm.waiting_name)
+
+    kb = ReplyKeyboardBuilder()
+    kb.button(text="Отмена")
     await query.message.answer(
-        "Отправьте данные: Имя, телефон, email (опционально). Формат через запятую."
+        "Введите ваше имя:",
+        reply_markup=kb.as_markup(resize_keyboard=True)
     )
     await query.answer()
 
-@router.message(lambda m: "," in m.text and m.from_user.id in _pending_guide)
-async def receive_lead(message: Message):
-    parts = [p.strip() for p in message.text.split(",")]
-    if len(parts) < 2:
-        return await message.reply(
-            "Неверный формат. Нужно: Имя, телефон, email (опционално)"
-        )
 
-    name = parts[0]
-    raw_phone = parts[1]
-    phone = validate_phone(raw_phone)
+@router.message(GuideForm.waiting_name)
+async def guide_name(message: Message, state: FSMContext):
+    if message.text.lower() == "отмена":
+        await state.clear()
+        return await message.answer("Отменено.", reply_markup=main_kb)
+
+    await state.update_data(name=message.text.strip())
+    await state.set_state(GuideForm.waiting_phone)
+
+    kb = ReplyKeyboardBuilder()
+    kb.button(text="Отмена")
+    await message.answer("Введите ваш телефон (в международном формате +996...):",
+                         reply_markup=kb.as_markup(resize_keyboard=True))
+
+
+@router.message(GuideForm.waiting_phone)
+async def guide_phone(message: Message, state: FSMContext):
+    if message.text.lower() == "отмена":
+        await state.clear()
+        return await message.answer("Отменено.", reply_markup=main_kb)
+
+    phone = validate_phone(message.text)
     if not phone:
-        return await message.reply(
-            "Невалидный номер. Укажи в международном формате или попробуй +996..."
-        )
+        return await message.answer("Невалидный номер. Попробуйте ещё раз (+996...).")
 
-    email = parts[2] if len(parts) > 2 else None
-    filename = _pending_guide.pop(message.from_user.id, "backend_guide.pdf")
+    await state.update_data(phone=phone)
+    await state.set_state(GuideForm.waiting_email)
 
-    
+    kb = ReplyKeyboardBuilder()
+    kb.button(text="Пропустить")
+    kb.button(text="Отмена")
+    await message.answer("Введите ваш email или нажмите «Пропустить»:",
+                         reply_markup=kb.as_markup(resize_keyboard=True))
+
+
+@router.message(GuideForm.waiting_email)
+async def guide_email(message: Message, state: FSMContext):
+    if message.text.lower() == "отмена":
+        await state.clear()
+        return await message.answer("Отменено.", reply_markup=main_kb)
+
+    email = None if message.text.lower() == "пропустить" else message.text.strip()
+
+    data = await state.get_data()
+    filename = data["filename"]
+    name = data["name"]
+    phone = data["phone"]
+    await state.clear() 
+
+
     payload = LeadCreate(name=name, phone=phone, email=email, source="guide", note=filename)
     async with AsyncSessionLocal() as db:
         await create_lead(db, payload)
 
-    
-    path = os.path.join(STATIC_DIR, "guieds", filename)  
+
+    path = os.path.join(STATIC_DIR, "guieds", filename)
     if os.path.exists(path) and os.path.getsize(path) > 0:
-        file = FSInputFile(path) 
-        await message.answer_document(file)
+        await message.answer_document(FSInputFile(path), reply_markup=main_kb)
     else:
-        await message.answer("Гайд не найден или пустой, мы свяжемся с вами.")
+        await message.answer("Гайд не найден или пустой, мы свяжемся с вами.", reply_markup=main_kb)
 
 
     for admin in ADMIN_CHAT_IDS:

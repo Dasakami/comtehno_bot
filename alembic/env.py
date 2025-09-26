@@ -6,7 +6,7 @@ from alembic import context
 from app.models import Base
 from app.config import DATABASE_URL
 
-# this is the Alembic Config object, which provides
+
 config = context.config
 fileConfig(config.config_file_name)
 target_metadata = Base.metadata
